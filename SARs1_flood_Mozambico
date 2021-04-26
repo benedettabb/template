@@ -1,0 +1,112 @@
+//////////prova utilizzo dati Sentinel-1 in google earth engine//////////////////
+
+//questa è la geometria create (roi=resione di interesse)
+//copiare e incollare questi script della geometria creata manualmente e cliccare su convert!
+
+
+var roi = 
+    /* color: #00ffff */
+    /* shown: false */
+    ee.Geometry.Polygon(
+        [[[34.08723782727732, -20.957038571293356],
+          [34.18611478040232, -20.880072025503893],
+          [35.76265286633982, -19.498399715451146],
+          [34.67500638196482, -18.693821291987796],
+          [32.91170071790232, -20.247468731832452]]]);
+          
+----------------------------------------------------------------------------------------------------------
+
+
+//aggiungo SAR Sen-1 band-C GRD Level-1 (Ground Range Detected): dati riproiettati sull'ellisoide di riferimento
+//sono già state fatte: termal noise removal, radiometric calibration, terrein correction (con SRTM o DEM)
+//i valori sono in log scale, cioè dB 
+
+var collectionVV = ee.ImageCollection("COPERNICUS/S1_GRD")
+/filtro per modalità di acquisizione IW: (Interferometric Wide swath): swath(250 km), geometric resolution (5 m by 20 m)
+  .filter (ee.Filter.eq ('instrumentMode', 'IW'))
+   //utilizzo solo la polarizzazione VV
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter (ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))    
+  //filtro per direzione del satellite - dati acquisiti in fase discente e ascendente devono sempre essere tenuti separati
+  .filterMetadata ('resolution_meters', 'equals', 10)
+  //filtro le immagini rispetto alla zona d'interesse
+  .filterBounds(roi)
+  .select ('VV');
+print (collectionVV, 'collectionVV');
+
+
+
+
+//stessa cosa, questa volta prendo la polarizzazione VH
+var collectionVH = ee.ImageCollection("COPERNICUS/S1_GRD")
+  .filter (ee.Filter.eq ('instrumentMode', 'IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+  .filter (ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))    
+  .filterMetadata ('resolution_meters', 'equals', 10)
+  .filterBounds(roi)
+  .select ('VH');
+print (collectionVH, 'collectionVH');
+
+
+
+//filtro per date
+var beforeVV =collectionVV.filterDate('2019-02-15', '2019-02-24').mosaic();
+var afterVV = collectionVV.filterDate('2019-03-15', '2019-03-21').mosaic();
+var beforeVH =collectionVH.filterDate('2019-02-15', '2019-02-24').mosaic();
+var afterVH =collectionVH.filterDate('2019-03-15', '2019-03-21').mosaic();
+
+
+//stampo le collezioni filtrate per date in modo tale da vedere che immagini ho
+print (beforeVV, 'beforeVV')
+print (afterVV, 'after')
+print (beforeVH, 'beforeVH')
+print (afterVH,'afterVH')
+
+
+/*per ogni imagecollection ho diverse immagini. se voglio posso avere la
+possibilità di visualizzarne una alla volta. così:
+
+function addImage (image) {
+var id = image.id;
+var image = ee.Image (image.id);
+Map.addLayer (image);
+}
+
+beforeVV.evaluate(function(beforeVV){
+beforeVV.features.map (addImage)
+})*/
+
+
+//ora aggiungo i layer alla mappa. scelgo lo stretch, il nome, e se far apparire subito il layer
+Map.centerObject (roi, 7);
+Map.addLayer (beforeVV, {min:-15, max:0}, 'before flood VV', 0);
+Map.addLayer (afterVV, {min:-15, max:0}, 'after flood VV', 0);
+Map.addLayer (beforeVH, {min:-25, max:0}, 'before flood VH', 0);
+Map.addLayer (afterVH, {min:-25, max:0}, 'after flood VH', 0);
+
+//faccio un immagine con bande diverse per visualizzare meglio la zona alluvionata
+Map.addLayer (beforeVH.addBands(afterVH).addBands(beforeVH), {min:-25, max:-8}, 'BHV/AVV/AVH composite', 0);
+
+
+//applico un filtro per rimuovere lo SPECKLE
+var SMOOTHING_RADIUS = 50;
+var beforeVV_filtered = beforeVV.focal_mean (SMOOTHING_RADIUS, 'circle', 'meters');
+var afterVV_filtered = afterVV.focal_mean (SMOOTHING_RADIUS, 'circle', 'meters');
+var beforeVH_filtered = beforeVH.focal_mean (SMOOTHING_RADIUS, 'circle', 'meters');
+var afterVH_filtered = afterVH.focal_mean (SMOOTHING_RADIUS, 'circle', 'meters');
+
+
+//aggiungo le immagini filtrate alla mappa
+Map.addLayer (beforeVV_filtered, {min:-15, max:0}, 'before flood VV filtered', 0);
+Map.addLayer (afterVV_filtered, {min:-15, max:0}, 'after flood VV filtered', 0);
+Map.addLayer (beforeVH_filtered, {min:-25, max:0}, 'before flood VH filtered', 0);
+Map.addLayer (afterVH_filtered, {min:-25, max:0}, 'after flood VH filtered', 0);
+
+//calcolo la differenza tra prima e dopo
+var differenceVH = afterVH_filtered.divide(beforeVH_filtered);
+Map.addLayer (differenceVH, {min:0, max:2}, 'difference VH filtered', 0);
+
+//creo una maschera per la zona innondata. applico una threshold
+var DIFF_UPPER_THRESHOLD = 1.24;
+var differenceVH_threshold = differenceVH.gt (DIFF_UPPER_THRESHOLD);
+Map.addLayer (differenceVH_threshold.updateMask(differenceVH_threshold), {palette:'blue'}, 'flooded areas-blue', 0) 
